@@ -8,5 +8,5 @@ build/
 venv/
 .env
 /settings.json
-/_logs/
-/_users/
+# Local-only: _sample_data, _logs, _users, etc.
+/_*

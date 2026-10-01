@@ -1,0 +1,85 @@
+{
+  "Institution": "Example Cancer Center",
+  "Viewer": {
+    "vtk_image_labeler_3d": ""
+  },
+  "Watcher": {
+    "watch_path": "\\\\fileserver\\QA\\CT_Import",
+    "data_root": "\\\\fileserver\\QA\\CTQA-CatPhan",
+    "dicom_sort_base_dir": "C:\\ctqa_tmp",
+    "directory_name_contains": "DailyQA",
+    "min_num_of_files": 401,
+    "queued_case_poll_sec": 10.0,
+    "max_wait_cycles": 180,
+    "disk_scan_for_new_case_detection": true,
+    "disk_scan_for_new_case_detection_sec": 60.0,
+    "min_series_dicom_files": 100
+  },
+  "Notifications": {
+    "email": {
+      "error_email_to": [
+        "physics@example.edu"
+      ],
+      "event_email_to": [
+        "physics@example.edu"
+      ],
+      "new_case_email_to": [],
+      "email_from": "ctqa",
+      "email_domain": "example.edu",
+      "email_host_address": "smtp.example.edu",
+      "email_host_port": 25,
+      "enable_ssl": false,
+      "email_from_enc_pw": ""
+    },
+    "google_chat": {
+      "webhook_url": ""
+    },
+    "slack": {
+      "webhook_url": ""
+    },
+    "microsoft_teams": {
+      "webhook_url": ""
+    },
+    "discord": {
+      "webhook_url": ""
+    }
+  },
+  "MACHINES": [
+    {
+      "NAME": "CTSim1",
+      "station_names": [
+        "ctsim",
+        "ct_sim"
+      ],
+      "machine_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1",
+      "baseline_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\baseline",
+      "cases_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\cases",
+      "html_report_template": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\report_templates\\full\\report.html",
+      "num_of_HU_masks": 9,
+      "num_of_UF_masks": 5,
+      "num_of_HC_masks": 15,
+      "num_of_LC_masks": 1,
+      "num_of_geo_masks": 4,
+      "num_of_DT_masks": 2,
+      "HU_tol": 40.0,
+      "geo_tol": 1.0,
+      "DT_tol": 1.5,
+      "UF_tol": 20,
+      "LC_tol": 10.0,
+      "UF.uniformity_tol": 0.2,
+      "HC_RMTF_tol": 0.5,
+      "HC_RMTF50_tol": 2.0,
+      "new_case_email_to": [
+        "physicists@example.edu",
+        "therapists@example.edu"
+      ],
+      "replace_words_for_report": "geo1->geo2,geo2->geo3,geo3->geo4,geo4->geo1,DT1->DT2,DT2->DT1",
+      "geo1->geo2": "pt1->pt2",
+      "geo2->geo3": "pt2->pt3",
+      "geo3->geo4": "pt3->pt4",
+      "geo4->geo1": "pt4->pt1",
+      "DT1->DT2": "pt5->pt6",
+      "DT2->DT1": "pt6->pt5"
+    }
+  ]
+}
