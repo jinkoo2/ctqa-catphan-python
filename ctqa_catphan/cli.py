@@ -15,9 +15,11 @@ KNOWN_COMMANDS = {
     "service",
     "gui",
     "convert-baseline",
+    "convert-results",
 }
 PARENT_FLAGS = {"-v", "--verbose", "-h", "--help"}
 ENV_SETTINGS = "CTQA_CATPHAN_SETTINGS"
+ENV_USERS = "CTQA_CATPHAN_USERS_DIR"
 
 
 def _insert_command(tokens: list[str], command: str) -> list[str]:
@@ -43,6 +45,7 @@ def wants_help(argv: list[str]) -> bool:
 def prepare_argv(argv: list[str] | None = None) -> list[str]:
     raw = list(sys.argv[1:] if argv is None else argv)
     settings: str | None = None
+    users: str | None = None
     mode: str | None = None
     out: list[str] = []
     i = 0
@@ -54,6 +57,14 @@ def prepare_argv(argv: list[str] | None = None) -> list[str]:
             continue
         if tok.startswith("--settings=") or tok.startswith("--config="):
             settings = tok.split("=", 1)[1]
+            i += 1
+            continue
+        if tok in ("--users", "--users-dir") and i + 1 < len(raw):
+            users = raw[i + 1]
+            i += 2
+            continue
+        if tok.startswith("--users=") or tok.startswith("--users-dir="):
+            users = tok.split("=", 1)[1]
             i += 1
             continue
         if tok == "--mode" and i + 1 < len(raw):
@@ -68,6 +79,8 @@ def prepare_argv(argv: list[str] | None = None) -> list[str]:
         i += 1
     if settings:
         os.environ[ENV_SETTINGS] = _env_path(settings)
+    if users:
+        os.environ[ENV_USERS] = _env_path(users)
     existing = next((tok for tok in out if tok in KNOWN_COMMANDS), None)
     if existing == "service":
         out = ["watch" if tok == "service" else tok for tok in out]
@@ -101,7 +114,9 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "With no command, opens the GUI. Use --mode service (or the 'watch' command) "
             "for the DailyQA folder watcher. --settings FILE selects settings.json; "
-            "if omitted, settings.json next to the executable is used."
+            "if omitted, settings.json next to the executable is used. "
+            "--users DIR is the folder of per-user JSON profiles; if omitted, _users next to "
+            "the executable is used."
         ),
     )
     parser.add_argument(
@@ -110,6 +125,12 @@ def main(argv: list[str] | None = None) -> int:
         "--config",
         metavar="FILE",
         help="path to settings.json (default: next to this executable)",
+    )
+    parser.add_argument(
+        "--users",
+        "--users-dir",
+        metavar="DIR",
+        help="folder for per-user JSON profiles (default: _users next to this executable)",
     )
     parser.add_argument(
         "--mode",
@@ -131,6 +152,11 @@ def main(argv: list[str] | None = None) -> int:
 
     p_conv = sub.add_parser("convert-baseline", help="convert baseline nrrd/mhd to compressed .mha")
     p_conv.add_argument("baseline_dir", nargs="?", help="defaults to MACHINES[0].baseline_dir")
+
+    sub.add_parser(
+        "convert-results",
+        help="write analysis.result.json and pass/fail result.json from existing results",
+    )
 
     args = parser.parse_args(argv)
     configure_logging(verbose=args.verbose, console=True)
@@ -172,6 +198,13 @@ def main(argv: list[str] | None = None) -> int:
             folder = str(machine.get("baseline_dir") or "")
         written = convert_nrrd_dir(folder)
         print(f"converted {len(written)} images in {folder}")
+        return 0
+
+    if args.cmd == "convert-results":
+        from .analysis import convert_existing_results
+
+        written = convert_existing_results()
+        print(f"wrote {len(written)} result files")
         return 0
 
     return 2

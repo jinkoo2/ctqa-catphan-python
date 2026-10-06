@@ -6,12 +6,12 @@ import logging
 import shutil
 from pathlib import Path
 
-from .analysis import analyze
+from .analysis import analyze, write_case_result
 from .app_settings import default_machine, load_settings, machine_by_name
 from .dicom_io import ensure_ct_mha
 from .image_io import find_image, read_image
-from .masks import pack_baseline, packed_paths, transfer_packed
-from .registration import register_rigid
+from .masks import pack_baseline, transfer_masks_transformix
+from .registration import register_rigid, resolve_elastix_dir, resolve_elastix_param_dir
 from .report import write_report
 
 logger = logging.getLogger(__name__)
@@ -51,20 +51,32 @@ def run_case(
     moving_path = find_image(baseline, "CT")
     if moving_path is None:
         raise FileNotFoundError(f"baseline CT not found in {baseline}")
-    moving = read_image(moving_path)
     fuz = find_image(baseline, "fuz_mask")
 
-    packed = pack_baseline(baseline, machine)
-    mapping = packed_paths(baseline)[1]
-
+    pack_baseline(baseline, machine)
+    elastix_dir = resolve_elastix_dir(settings)
     reg_dir = case / "1.reg"
-    transform = register_rigid(ct, moving, reg_dir, moving_mask=fuz)
+    register_rigid(
+        ct_path,
+        moving_path,
+        reg_dir,
+        moving_mask=fuz,
+        param_dir=resolve_elastix_param_dir(machine),
+        elastix_dir=elastix_dir,
+    )
 
     seg_dir = case / "2.seg"
-    transfer_packed(packed, mapping, ct, transform, seg_dir)
+    transfer_masks_transformix(
+        baseline,
+        machine,
+        seg_dir,
+        reg_dir / "TransformParameters.1.txt",
+        elastix_dir=elastix_dir,
+    )
 
     result_dir = case / "3.analysis"
     analyze(ct, seg_dir, result_dir, machine)
+    write_case_result(result_dir, baseline, machine)
     report = write_report(case, baseline, result_dir, machine)
     if send_email:
         from .emailer import send_report_file
@@ -75,5 +87,11 @@ def run_case(
             extra_to=machine.get("new_case_email_to"),
             data=settings,
         )
+    try:
+        from .postprocess import run_post_processing
+
+        run_post_processing(case, machine, data=settings)
+    except Exception:
+        logger.exception("post-processing failed for %s", case)
     logger.info("case complete: %s", case)
     return report

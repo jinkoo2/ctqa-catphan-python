@@ -2,16 +2,81 @@
 
 from __future__ import annotations
 
+import csv
+import json
 import logging
+import re
 from pathlib import Path
 
 import numpy as np
 import SimpleITK as sitk
 
 from .app_settings import mask_count
-from .image_io import find_image, read_image, write_mha
+from .image_io import write_mha
+from .masks import load_named_masks
 
 logger = logging.getLogger(__name__)
+
+RESULT_JSON_NAME = "analysis.result.json"
+CASE_RESULT_NAME = "result.json"
+COMPARE_SPECS = (
+    ("HU", "HU_tol", "HU"),
+    ("UF", "UF_tol", "UF"),
+    ("UF.uniformity", "UF.uniformity_tol", ""),
+    ("LC", "LC_tol", "LC"),
+    ("geo.dist", "geo_tol", "geo"),
+    ("DT.dist", "DT_tol", "DT"),
+    ("HC.RMTF", "HC_RMTF_tol", "HC"),
+    ("HC.RMTF.calc", "HC_RMTF50_tol", ""),
+)
+VALUE_TABLES = (
+    "HU",
+    "UF",
+    "UF.uniformity",
+    "HC",
+    "HC.RMTF",
+    "HC.RMTF.calc",
+    "LC",
+    "geo.dist",
+    "DT.dist",
+)
+POINT_TABLES = ("geo", "DT")
+TABLE_ORDER = (
+    "HU",
+    "UF",
+    "UF.uniformity",
+    "HC",
+    "HC.RMTF",
+    "HC.RMTF.calc",
+    "LC",
+    "geo",
+    "geo.dist",
+    "DT",
+    "DT.dist",
+)
+CSV_SKIP_SUBSTR = ("copy",)
+
+
+def analysis_result_path(folder: str | Path) -> Path:
+    return Path(folder) / RESULT_JSON_NAME
+
+
+def case_result_path(folder: str | Path) -> Path:
+    folder = Path(folder)
+    nested = folder / "3.analysis" / CASE_RESULT_NAME
+    if nested.is_file():
+        return nested
+    return folder / CASE_RESULT_NAME
+
+
+_RESULT_HEAD_RE = re.compile(r'"result"\s*:\s*"(pass|fail)"', re.IGNORECASE)
+
+
+def csv_key(filename: str) -> str:
+    name = Path(filename).name
+    if name.lower().endswith(".csv"):
+        return name[:-4]
+    return name
 
 
 def masked_stats(image: sitk.Image, mask: sitk.Image) -> tuple[float, float, float, float]:
@@ -39,37 +104,37 @@ def write_csv(path: Path, headers: list[str], values: list) -> None:
     )
 
 
-def _require_mask(mask_dir: Path, stem: str) -> Path:
-    found = find_image(mask_dir, stem)
-    if found is None:
-        raise FileNotFoundError(f"mask not found: {mask_dir / stem}")
-    return found
+def _need_mask(masks: dict[str, sitk.Image], stem: str) -> sitk.Image:
+    mask = masks.get(stem)
+    if mask is None:
+        raise FileNotFoundError(f"mask not found: {stem}")
+    return mask
 
 
-def measure_mean(ct: sitk.Image, mask_dir: Path, key: str, n: int, out_dir: Path) -> None:
+def measure_mean(ct: sitk.Image, masks: dict[str, sitk.Image], key: str, n: int) -> dict:
     headers: list[str] = []
     values: list[float] = []
     for i in range(1, n + 1):
         stem = f"{key}{i}"
-        mask = read_image(_require_mask(mask_dir, stem))
+        mask = _need_mask(masks, stem)
         _mn, _mx, mean, _std = masked_stats(ct, mask)
         headers.append(stem)
         values.append(mean)
         logger.info("%s mean=%s", stem, mean)
-    write_csv(out_dir / f"{key}.csv", headers, values)
+    return {"labels": headers, "values": values}
 
 
-def measure_std(ct: sitk.Image, mask_dir: Path, key: str, n: int, out_dir: Path) -> None:
+def measure_std(ct: sitk.Image, masks: dict[str, sitk.Image], key: str, n: int) -> dict:
     headers: list[str] = []
     values: list[float] = []
     for i in range(1, n + 1):
         stem = f"{key}{i}"
-        mask = read_image(_require_mask(mask_dir, stem))
+        mask = _need_mask(masks, stem)
         _mn, _mx, _mean, std = masked_stats(ct, mask)
         headers.append(stem)
         values.append(std)
         logger.info("%s std=%s", stem, std)
-    write_csv(out_dir / f"{key}.csv", headers, values)
+    return {"labels": headers, "values": values}
 
 
 def bounding_box(mask: sitk.Image) -> tuple[int, int, int, int, int, int]:
@@ -132,40 +197,36 @@ def center_of_gravity(image: sitk.Image) -> tuple[float, float, float]:
 
 def measure_dist(
     ct: sitk.Image,
-    mask_dir: Path,
+    masks: dict[str, sitk.Image],
     key: str,
     n: int,
     level0: float,
     th: float,
     level1: float,
     out_dir: Path,
-) -> None:
-    points: list[tuple[str, float, float, float]] = []
+) -> tuple[dict, dict]:
+    points: list[dict] = []
     for i in range(1, n + 1):
         stem = f"{key}{i}"
-        mask = read_image(_require_mask(mask_dir, stem))
+        mask = _need_mask(masks, stem)
         bbox = bounding_box(mask)
         crop = crop_bbox(ct, bbox)
         th_img = threshold_levels(crop, level0, th, level1)
         write_mha(crop, out_dir / f"{stem}.crop.mha")
         write_mha(th_img, out_dir / f"{stem}.crop.th.mha")
         x, y, z = center_of_gravity(th_img)
-        points.append((stem, x, y, z))
+        points.append({"id": stem, "x": x, "y": y, "z": z})
         logger.info("%s COM=%s %s %s", stem, x, y, z)
-    lines = [",x[mm],y[mm],z[mm]"]
-    lines.extend(f"{name},{x},{y},{z}" for name, x, y, z in points)
-    (out_dir / f"{key}.csv").write_text("\n".join(lines) + "\n", encoding="utf-8")
-
     dist_labels: list[str] = []
     dist_values: list[float] = []
     for i in range(len(points)):
         a = points[i]
         b = points[(i + 1) % len(points)]
-        dx, dy, dz = a[1] - b[1], a[2] - b[2], a[3] - b[3]
+        dx, dy, dz = a["x"] - b["x"], a["y"] - b["y"], a["z"] - b["z"]
         dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-        dist_labels.append(f"{a[0]}->{b[0]}")
+        dist_labels.append(f"{a['id']}->{b['id']}")
         dist_values.append(dist)
-    write_csv(out_dir / f"{key}.dist.csv", dist_labels, dist_values)
+    return {"points": points}, {"labels": dist_labels, "values": dist_values}
 
 
 def integral_non_uniformity(values: list[float]) -> float:
@@ -193,27 +254,272 @@ def relative_mtf(values: list[float]) -> tuple[list[float], float]:
     return norm, x
 
 
-def _read_value_row(path: Path) -> tuple[list[str], list[float]]:
-    lines = path.read_text(encoding="utf-8").splitlines()
-    headers = [p.strip() for p in lines[0].split(",")]
-    values = [float(p) for p in lines[1].split(",")]
-    return headers, values
+def _as_number(text: str):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return text
 
 
-def analyze(ct: sitk.Image, mask_dir: Path, out_dir: Path, machine: dict) -> None:
+def _read_csv_rows(path: Path) -> list[list[str]]:
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    rows = []
+    for row in csv.reader(text.splitlines()):
+        cells = [c.strip() for c in row]
+        if any(cells):
+            rows.append(cells)
+    return rows
+
+
+def _value_table_from_rows(rows: list[list[str]]) -> dict:
+    labels = rows[0] if rows else []
+    values = [_as_number(c) for c in rows[1]] if len(rows) > 1 else []
+    return {"labels": labels, "values": values}
+
+
+def _point_table_from_rows(rows: list[list[str]]) -> dict:
+    points = []
+    for row in rows[1:]:
+        if not row:
+            continue
+        ident = row[0]
+        nums = [_as_number(c) for c in row[1:4]]
+        while len(nums) < 3:
+            nums.append(0.0)
+        points.append({"id": ident, "x": nums[0], "y": nums[1], "z": nums[2]})
+    return {"points": points}
+
+
+def result_from_csv_folder(folder: str | Path) -> dict:
+    folder = Path(folder)
+    if not folder.is_dir():
+        return {}
+    out: dict = {}
+    for path in sorted(folder.glob("*.csv")):
+        if any(s in path.name.lower() for s in CSV_SKIP_SUBSTR):
+            continue
+        key = csv_key(path.name)
+        rows = _read_csv_rows(path)
+        if not rows:
+            continue
+        if key in POINT_TABLES:
+            out[key] = _point_table_from_rows(rows)
+        else:
+            out[key] = _value_table_from_rows(rows)
+    return out
+
+
+def write_analysis_result(folder: str | Path, data: dict) -> Path:
+    dest = analysis_result_path(folder)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    logger.info("wrote %s", dest)
+    return dest
+
+
+def convert_csvs_to_json(folder: str | Path, *, overwrite: bool = False) -> Path | None:
+    folder = Path(folder)
+    dest = analysis_result_path(folder)
+    if dest.is_file() and not overwrite:
+        return dest
+    data = result_from_csv_folder(folder)
+    if not data:
+        return None
+    return write_analysis_result(folder, data)
+
+
+def load_analysis_result(folder: str | Path, *, write_json_from_csv: bool = True) -> dict:
+    folder = Path(folder)
+    dest = analysis_result_path(folder)
+    if dest.is_file():
+        loaded = json.loads(dest.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    data = result_from_csv_folder(folder)
+    if data and write_json_from_csv:
+        write_analysis_result(folder, data)
+    return data
+
+
+def evaluate_against_baseline(case_data: dict, baseline_data: dict, machine: dict) -> dict:
+    """Pass/fail vs baseline using the same tables and tols as the HTML report."""
+    items: list[dict] = []
+    for key, tol_key, mask_key in COMPARE_SPECS:
+        labels, case_vals = table_labels_values(case_data, key)
+        base_labels, base_vals = table_labels_values(baseline_data, key)
+        try:
+            tol = float(machine.get(tol_key) or 0)
+        except (TypeError, ValueError):
+            tol = 0.0
+        n = min(len(base_labels), len(labels), len(case_vals), len(base_vals))
+        if mask_key:
+            limit = mask_count(machine, mask_key)
+            if limit:
+                n = min(n, limit)
+        elif n:
+            n = min(n, 1)
+        for i in range(n):
+            value = float(case_vals[i])
+            baseline = float(base_vals[i])
+            diff = value - baseline
+            ok = abs(diff) < tol
+            items.append(
+                {
+                    "table": key,
+                    "label": base_labels[i] or labels[i],
+                    "value": value,
+                    "baseline": baseline,
+                    "diff": diff,
+                    "tol": tol,
+                    "result": "pass" if ok else "fail",
+                }
+            )
+    n_fail = sum(1 for item in items if item["result"] == "fail")
+    n_pass = sum(1 for item in items if item["result"] == "pass")
+    if not items:
+        overall = "partial"
+    elif n_fail:
+        overall = "fail"
+    else:
+        overall = "pass"
+    return {
+        "result": overall,
+        "n_pass": n_pass,
+        "n_fail": n_fail,
+        "failed": [f"{item['table']}.{item['label']}" for item in items if item["result"] == "fail"],
+        "items": items,
+    }
+
+
+def write_case_result(result_dir: str | Path, baseline_dir: str | Path, machine: dict) -> Path | None:
+    case_data = load_analysis_result(result_dir, write_json_from_csv=True)
+    baseline_data = load_analysis_result(baseline_dir, write_json_from_csv=True)
+    if not case_data or not baseline_data:
+        return None
+    summary = evaluate_against_baseline(case_data, baseline_data, machine)
+    dest = Path(result_dir) / CASE_RESULT_NAME
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    logger.info("wrote %s result=%s", dest, summary["result"])
+    return dest
+
+
+def read_case_result(folder: str | Path) -> str | None:
+    """Pass/fail from the start of result.json (avoid parsing the full items list)."""
+    folder = Path(folder)
+    for path in (folder / "3.analysis" / CASE_RESULT_NAME, folder / CASE_RESULT_NAME):
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                head = fh.read(256)
+        except OSError:
+            continue
+        match = _RESULT_HEAD_RE.search(head)
+        if match:
+            return match.group(1).lower()
+    return None
+
+
+def table_labels_values(data: dict, filename: str) -> tuple[list[str], list[float]]:
+    block = data.get(csv_key(filename)) or {}
+    if "points" in block:
+        points = block.get("points") or []
+        labels = [str(p.get("id") or "") for p in points]
+        values = [float(p.get("x") or 0) for p in points]
+        return labels, values
+    labels = [str(x) for x in (block.get("labels") or [])]
+    values = [float(x) for x in (block.get("values") or [])]
+    return labels, values
+
+
+def table_as_rows(data: dict, key: str) -> list[list[str]]:
+    block = data.get(key) or {}
+    if "points" in block:
+        rows = [["id", "x[mm]", "y[mm]", "z[mm]"]]
+        for point in block.get("points") or []:
+            rows.append(
+                [
+                    str(point.get("id") or ""),
+                    str(point.get("x") or ""),
+                    str(point.get("y") or ""),
+                    str(point.get("z") or ""),
+                ]
+            )
+        return rows
+    labels = [str(x) for x in (block.get("labels") or [])]
+    values = [str(x) for x in (block.get("values") or [])]
+    if not labels and not values:
+        return []
+    return [labels, values]
+
+
+def analysis_tables_for_display(folder: str | Path) -> list[tuple[str, list[list[str]]]]:
+    data = load_analysis_result(folder)
+    tables: list[tuple[str, list[list[str]]]] = []
+    seen = set()
+    for key in TABLE_ORDER:
+        if key not in data:
+            continue
+        rows = table_as_rows(data, key)
+        if rows:
+            tables.append((key, rows))
+            seen.add(key)
+    for key in data:
+        if key in seen:
+            continue
+        rows = table_as_rows(data, key)
+        if rows:
+            tables.append((key, rows))
+    return tables
+
+
+def convert_existing_results(data: dict | None = None) -> list[Path]:
+    from .app_settings import list_case_folders, load_settings, named_machines
+
+    settings = data if data is not None else load_settings()
+    written: list[Path] = []
+    for machine in named_machines(settings):
+        baseline = Path(str(machine.get("baseline_dir") or ""))
+        path = convert_csvs_to_json(baseline) if baseline.is_dir() else None
+        if path is not None:
+            written.append(path)
+        for case in list_case_folders(machine):
+            analysis = case / "3.analysis"
+            path = convert_csvs_to_json(analysis) if analysis.is_dir() else None
+            if path is not None:
+                written.append(path)
+            if analysis.is_dir() and baseline.is_dir():
+                result = write_case_result(analysis, baseline, machine)
+                if result is not None:
+                    written.append(result)
+    return written
+
+
+def analyze(ct: sitk.Image, mask_dir: Path, out_dir: Path, machine: dict) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    measure_mean(ct, mask_dir, "HU", mask_count(machine, "HU"), out_dir)
-    measure_mean(ct, mask_dir, "UF", mask_count(machine, "UF"), out_dir)
-    measure_std(ct, mask_dir, "HC", mask_count(machine, "HC"), out_dir)
-    measure_std(ct, mask_dir, "LC", mask_count(machine, "LC"), out_dir)
-    measure_dist(ct, mask_dir, "geo", mask_count(machine, "geo"), 1.0, -500.0, 0.0, out_dir)
-    measure_dist(ct, mask_dir, "DT", mask_count(machine, "DT"), 0.0, 200.0, 1.0, out_dir)
-
-    _headers, uf = _read_value_row(out_dir / "UF.csv")
-    inu = integral_non_uniformity(uf)
-    write_csv(out_dir / "UF.uniformity.csv", ["Uniformity"], [inu])
-
-    hc_headers, hc = _read_value_row(out_dir / "HC.csv")
-    norm, x50 = relative_mtf(hc)
-    write_csv(out_dir / "HC.RMTF.csv", hc_headers, norm)
-    write_csv(out_dir / "HC.RMTF.calc.csv", ["RMTF=0.5"], [x50])
+    masks = load_named_masks(mask_dir, machine)
+    result: dict = {}
+    if mask_count(machine, "HU"):
+        result["HU"] = measure_mean(ct, masks, "HU", mask_count(machine, "HU"))
+    if mask_count(machine, "UF"):
+        result["UF"] = measure_mean(ct, masks, "UF", mask_count(machine, "UF"))
+        inu = integral_non_uniformity([float(v) for v in result["UF"]["values"]])
+        result["UF.uniformity"] = {"labels": ["Uniformity"], "values": [inu]}
+    if mask_count(machine, "HC"):
+        result["HC"] = measure_std(ct, masks, "HC", mask_count(machine, "HC"))
+        norm, x50 = relative_mtf([float(v) for v in result["HC"]["values"]])
+        result["HC.RMTF"] = {"labels": list(result["HC"]["labels"]), "values": norm}
+        result["HC.RMTF.calc"] = {"labels": ["RMTF=0.5"], "values": [x50]}
+    if mask_count(machine, "LC"):
+        result["LC"] = measure_std(ct, masks, "LC", mask_count(machine, "LC"))
+    if mask_count(machine, "geo"):
+        geo, geo_dist = measure_dist(
+            ct, masks, "geo", mask_count(machine, "geo"), 1.0, -500.0, 0.0, out_dir
+        )
+        result["geo"] = geo
+        result["geo.dist"] = geo_dist
+    if mask_count(machine, "DT"):
+        dt, dt_dist = measure_dist(
+            ct, masks, "DT", mask_count(machine, "DT"), 0.0, 200.0, 1.0, out_dir
+        )
+        result["DT"] = dt
+        result["DT.dist"] = dt_dist
+    return write_analysis_result(out_dir, result)

@@ -5,14 +5,24 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 SETTINGS_NAME = "settings.json"
 ENV_SETTINGS = "CTQA_CATPHAN_SETTINGS"
 MACHINES_KEY = "MACHINES"
 INSTITUTION_KEY = "Institution"
+RUN_MODE_KEY = "RunMode"
+RUN_MODE_CLINIC = "Clinic"
+RUN_MODE_SIMPLE = "Simple"
+RUN_MODES = (RUN_MODE_CLINIC, RUN_MODE_SIMPLE)
 NOTIFICATIONS_KEY = "Notifications"
 WATCHER_KEY = "Watcher"
+ELASTIX_KEY = "Elastix"
+POST_PROCESSING_KEY = "PostProcessing"
+DOCUFORMS2_CTQA_TYPE = "docuforms2_ctqa"
+DEFAULT_CASE_FOLDER_REGEX = r"^\d{8}_DailyQA$"
+CASE_FOLDER_NAME_REGEX_KEY = "CASE_FOLDER_NAME_REGEX"
 ERROR_EMAIL_TO_KEY = "error_email_to"
 EVENT_EMAIL_TO_KEY = "event_email_to"
 NEW_CASE_EMAIL_TO_KEY = "new_case_email_to"
@@ -124,6 +134,77 @@ def get_institution(data: dict | None = None) -> str:
     return str((data or load_settings()).get(INSTITUTION_KEY) or "").strip()
 
 
+def get_run_mode(data: dict | None = None) -> str:
+    settings = data if data is not None else load_settings()
+    text = str((settings or {}).get(RUN_MODE_KEY) or "").strip()
+    if text.lower() == RUN_MODE_SIMPLE.lower():
+        return RUN_MODE_SIMPLE
+    return RUN_MODE_CLINIC
+
+
+def is_simple_run_mode(data: dict | None = None) -> bool:
+    """True when Open Case should pick a folder instead of a machine list.
+
+    Simple mode if the settings file is missing, MACHINES is absent/empty, or
+    ``RunMode`` is ``Simple``.
+    """
+    path = settings_path()
+    if not path.is_file():
+        return True
+    settings = data if data is not None else load_settings()
+    if not settings:
+        return True
+    if get_run_mode(settings) == RUN_MODE_SIMPLE:
+        return True
+    return not named_machines(settings)
+
+
+def simple_machine_name(case_folder: str | Path) -> str:
+    """Machine name from the parent of the case folder."""
+    folder = Path(case_folder)
+    parent = folder.parent
+    return parent.name if parent.name else ""
+
+
+_CASE_NAME_FORMATS = (
+    "%Y%m%d_%H%M%S",
+    "%Y%m%d-%H%M%S",
+    "%Y-%m-%d_%H-%M-%S",
+    "%y-%m-%d_%H-%M-%S",
+    "%Y%m%d",
+)
+
+
+def case_recency_key(folder: str | Path) -> tuple:
+    """Newer case folders compare greater (use reverse=True for newest first)."""
+    path = Path(folder)
+    for fmt in _CASE_NAME_FORMATS:
+        try:
+            return (1, datetime.strptime(path.name, fmt).timestamp())
+        except ValueError:
+            continue
+    try:
+        return (0, path.stat().st_mtime)
+    except OSError:
+        return (0, 0.0)
+
+
+def list_case_folders(machine: dict | None) -> list[Path]:
+    root = Path(str((machine or {}).get("cases_dir") or "")).expanduser()
+    folders: list[Path] = []
+    try:
+        with os.scandir(root) as it:
+            for entry in it:
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    folders.append(Path(entry.path))
+    except OSError:
+        return []
+    folders.sort(key=case_recency_key, reverse=True)
+    return folders
+
+
 def get_machines(data: dict | None = None) -> list[dict]:
     machines = (data or load_settings()).get(MACHINES_KEY) or []
     if not isinstance(machines, list):
@@ -174,6 +255,33 @@ def watcher_settings(data: dict | None = None) -> dict:
     return block if isinstance(block, dict) else {}
 
 
+def watcher_case_folder_regex(data: dict | None = None) -> str:
+    """Watcher case-folder regex. Missing → ``MMDDYYYY_DailyQA``; empty → any name."""
+    if data is None or (isinstance(data, dict) and WATCHER_KEY in data):
+        block = watcher_settings(data)
+    else:
+        block = data if isinstance(data, dict) else {}
+    if CASE_FOLDER_NAME_REGEX_KEY in block:
+        return str(block.get(CASE_FOLDER_NAME_REGEX_KEY) or "")
+    if "case_folder_name_regex" in block:
+        return str(block.get("case_folder_name_regex") or "")
+    return DEFAULT_CASE_FOLDER_REGEX
+
+
+def elastix_settings(data: dict | None = None) -> dict:
+    settings = data if data is not None else load_settings()
+    block = settings.get(ELASTIX_KEY) or {}
+    return block if isinstance(block, dict) else {}
+
+
+def elastix_dir_setting(data: dict | None = None) -> str:
+    settings = data if data is not None else load_settings()
+    folder = str(elastix_settings(settings).get("elastix_dir") or "").strip()
+    if folder:
+        return folder
+    return str(settings.get("elastix_dir") or "").strip()
+
+
 def notifications(data: dict | None = None) -> dict:
     block = (data or load_settings()).get(NOTIFICATIONS_KEY) or {}
     return block if isinstance(block, dict) else {}
@@ -220,3 +328,140 @@ def label_map(machine: dict) -> dict[int, str]:
     for index, stem in enumerate(mask_stems(machine), start=1):
         mapping[index] = stem
     return mapping
+
+
+def default_docuforms2_ctqa_step() -> dict:
+    """Clinic DocuForms2 upload (upload_ctqa input.json)."""
+    return {
+        "type": DOCUFORMS2_CTQA_TYPE,
+        "enabled": True,
+        "backend_url": "https://docuforms.example.edu:9001",
+        "verify_ssl": False,
+        "dry_run": False,
+        "attach_dcm_zip": True,
+        "attach_pdf": True,
+        "resubmit": False,
+        "timeout_sec": 300,
+        "form_ids": [],
+        "email_success_event_to": [],
+        "email_failure_event_to": [],
+    }
+
+
+def normalize_form_ids(value) -> list[dict]:
+    """Normalize a machine→form_id list to ``[{"machine": name, "form_id": id}, ...]``."""
+    items: list = []
+    if isinstance(value, dict):
+        if "machine" in value or "form_id" in value or "NAME" in value:
+            items = [value]
+        else:
+            items = [{"machine": key, "form_id": val} for key, val in value.items()]
+    elif isinstance(value, list):
+        items = value
+    out: list[dict] = []
+    for item in items:
+        machine = ""
+        form_id = ""
+        if isinstance(item, dict):
+            machine = str(item.get("machine") or item.get("NAME") or item.get("name") or "").strip()
+            form_id = str(item.get("form_id") or item.get("docuforms2_form_id") or "").strip()
+        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+            machine = str(item[0] or "").strip()
+            form_id = str(item[1] or "").strip()
+        if not machine or not form_id:
+            continue
+        key = machine.lower()
+        out = [row for row in out if row["machine"].lower() != key]
+        out.append({"machine": machine, "form_id": form_id})
+    return out
+
+
+def form_ids_from_step(step: dict | None) -> list[dict]:
+    step = step or {}
+    return normalize_form_ids(step.get("form_ids") or step.get("form_id_map"))
+
+
+def form_ids_from_machines(machines) -> list[dict]:
+    rows: list[dict] = []
+    if not isinstance(machines, list):
+        return rows
+    for machine in machines:
+        if not isinstance(machine, dict):
+            continue
+        name = str(machine.get("NAME") or "").strip()
+        form_id = str(machine.get("docuforms2_form_id") or "").strip()
+        if name and form_id:
+            rows.append({"machine": name, "form_id": form_id})
+    return normalize_form_ids(rows)
+
+
+def form_id_for_machine(step: dict | None, machine_cfg: dict | None) -> str:
+    """DocuForms2 form id for this machine from PostProcessing.form_ids, else legacy machine key."""
+    name = str((machine_cfg or {}).get("NAME") or "").strip()
+    for row in form_ids_from_step(step):
+        if row["machine"].lower() == name.lower():
+            return row["form_id"]
+    return str((machine_cfg or {}).get("docuforms2_form_id") or "").strip()
+
+
+def format_form_ids(value) -> str:
+    return "\n".join(
+        f"{row['machine']} = {row['form_id']}" for row in normalize_form_ids(value)
+    )
+
+
+def parse_form_ids_text(text) -> list[dict]:
+    rows: list[dict] = []
+    for line in str(text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            left, right = line.split("=", 1)
+        elif ":" in line:
+            left, right = line.split(":", 1)
+        else:
+            parts = line.split(None, 1)
+            if len(parts) < 2:
+                continue
+            left, right = parts
+        machine = left.strip()
+        form_id = right.strip()
+        if machine and form_id:
+            rows.append({"machine": machine, "form_id": form_id})
+    return normalize_form_ids(rows)
+
+
+def post_processing_steps(data: dict | None = None) -> list[dict]:
+    settings = data if data is not None else load_settings()
+    raw = (settings or {}).get(POST_PROCESSING_KEY)
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+    return [step for step in raw if isinstance(step, dict) and str(step.get("type") or "").strip()]
+
+
+def find_post_step(type_name: str, data: dict | None = None) -> dict:
+    wanted = str(type_name or "").strip()
+    for step in post_processing_steps(data):
+        if str(step.get("type") or "").strip() == wanted:
+            return dict(step)
+    return {}
+
+
+def upsert_post_step(steps: list, step: dict) -> list[dict]:
+    kind = str((step or {}).get("type") or "").strip()
+    out: list[dict] = []
+    found = False
+    for existing in steps or []:
+        if not isinstance(existing, dict):
+            continue
+        if str(existing.get("type") or "").strip() == kind:
+            out.append(dict(step))
+            found = True
+        else:
+            out.append(dict(existing))
+    if not found and kind:
+        out.append(dict(step))
+    return out

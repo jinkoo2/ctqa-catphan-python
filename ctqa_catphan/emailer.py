@@ -230,7 +230,37 @@ def send_new_case_report(subject: str, html_body: str, extra_to=None, data: dict
         send_from_settings(to, subject, html_body, data)
 
 
-def send_error_email(message: str, details: str = "", *, context: str = "") -> None:
+def send_list_email(
+    to,
+    message: str,
+    details: str = "",
+    *,
+    context: str = "event",
+    subject: str | None = None,
+    blocking: bool = True,
+    data: dict | None = None,
+) -> None:
+    """Send *message* to an explicit address list using clinic SMTP."""
+    addresses = error_email_to_list(to)
+    if not addresses:
+        return
+    subj = subject or f"CTQA-CatPhan event: {(message or context)[:120]}"
+    body = (
+        "<html><body>"
+        f"<pre>{html.escape(f'CTQA-CatPhan {__version__} host={platform.node()} context={context}')}</pre>"
+        f"<pre>{html.escape(message)}\n\n{html.escape(details)}</pre>"
+        "</body></html>"
+    )
+    send_from_settings(addresses, subj, body, data)
+
+
+def send_error_email(
+    message: str,
+    details: str = "",
+    *,
+    context: str = "",
+    blocking: bool = True,
+) -> None:
     global _sending_error_email
     if _sending_error_email:
         return
@@ -289,6 +319,14 @@ def install_error_email_hooks() -> None:
     sys.excepthook = hook
 
 
-def send_report_file(report_html: Path, machine_name: str, extra_to=None, data: dict | None = None) -> None:
-    body = report_html.read_text(encoding="utf-8")
-    send_new_case_report(f"CTQA ({machine_name})", body, extra_to=extra_to, data=data)
+def send_report_file(report_html, machine_name: str, extra_to=None, data: dict | None = None) -> None:
+    from pathlib import Path
+
+    from .identity import profile_email, subscribers_for_new_qa_case
+
+    body = Path(report_html).read_text(encoding="utf-8")
+    extra = merge_recipients(
+        extra_to,
+        [profile_email(p) for p in subscribers_for_new_qa_case(machine_name)],
+    )
+    send_new_case_report(f"CTQA ({machine_name})", body, extra_to=extra, data=data)

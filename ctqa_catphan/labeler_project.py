@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .app_settings import load_settings, mask_stems
 from .image_io import find_image
+from .masks import PACKED_JSON, PACKED_STEM, load_label_map
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ def write_project_json(
     image_dir: str | Path | None = None,
     mask_dir: str | Path | None = None,
     include_fuz: bool = False,
+    include_masks: bool = True,
+    packed: bool | None = None,
 ) -> Path:
     """Write ``vtk_image_labeler_3d.project.json`` with paths relative to *folder*."""
     root = Path(folder)
@@ -73,22 +76,56 @@ def write_project_json(
     if ct is None:
         raise FileNotFoundError(f"no CT image in {image_root}")
     layers: list[dict] = []
-    stems = list(mask_stems(machine) if machine else [])
-    if include_fuz:
-        stems = ["fuz_mask"] + stems
-    for i, stem in enumerate(stems):
-        found = find_image(mask_root, stem)
-        if found is None:
-            continue
-        color = LAYER_COLORS[i % len(LAYER_COLORS)]
-        layers.append(
-            {
-                "name": stem,
-                "file": _rel(found, root),
-                "color": color,
-                "alpha": 0.45,
-            }
-        )
+    packed_file = find_image(mask_root, PACKED_STEM) if include_masks else None
+    mapping_path = mask_root / PACKED_JSON
+    stems = list(mask_stems(machine) if machine and include_masks else [])
+    if packed is None:
+        packed = packed_file is not None and mapping_path.is_file() and not include_fuz
+    use_packed = bool(packed) and packed_file is not None and mapping_path.is_file()
+    if include_fuz and include_masks:
+        fuz = find_image(mask_root, "fuz_mask")
+        if fuz is not None:
+            layers.append(
+                {
+                    "name": "fuz_mask",
+                    "file": _rel(fuz, root),
+                    "color": LAYER_COLORS[0],
+                    "alpha": 0.45,
+                }
+            )
+    packed_payload = None
+    if use_packed:
+        mapping = load_label_map(mapping_path)
+        packed_rel = _rel(packed_file, root)
+        packed_payload = {
+            "file": packed_rel,
+            "labels": {str(k): v for k, v in mapping.items()},
+        }
+        for i, (value, stem) in enumerate(mapping.items()):
+            color = LAYER_COLORS[(i + (1 if include_fuz else 0)) % len(LAYER_COLORS)]
+            layers.append(
+                {
+                    "name": stem,
+                    "file": packed_rel,
+                    "label": int(value),
+                    "color": color,
+                    "alpha": 0.45,
+                }
+            )
+    else:
+        for i, stem in enumerate(stems):
+            found = find_image(mask_root, stem)
+            if found is None:
+                continue
+            color = LAYER_COLORS[(i + (1 if include_fuz else 0)) % len(LAYER_COLORS)]
+            layers.append(
+                {
+                    "name": stem,
+                    "file": _rel(found, root),
+                    "color": color,
+                    "alpha": 0.45,
+                }
+            )
     payload = {
         "kind": PROJECT_KIND,
         "image": _rel(ct, root),
@@ -98,6 +135,8 @@ def write_project_json(
         },
         "segmentations": layers,
     }
+    if packed_payload:
+        payload["packed_labels"] = packed_payload
     dest = project_json_path(root)
     dest.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     logger.info("wrote %s (%s layers)", dest, len(layers))
@@ -105,13 +144,28 @@ def write_project_json(
 
 
 def write_baseline_project(baseline_dir: str | Path, machine: dict) -> Path:
-    return write_project_json(baseline_dir, machine, include_fuz=True)
+    return write_project_json(baseline_dir, machine, include_fuz=True, packed=False)
 
 
-def write_case_project(case_dir: str | Path, machine: dict) -> Path:
+def write_case_project(
+    case_dir: str | Path,
+    machine: dict,
+    *,
+    include_labels: bool | None = None,
+) -> Path:
     case = Path(case_dir)
-    mask_dir = case / "2.seg" if (case / "2.seg").is_dir() else case
-    return write_project_json(case, machine, image_dir=case, mask_dir=mask_dir)
+    has_seg = (case / "2.seg").is_dir()
+    if include_labels is None:
+        include_labels = has_seg
+    mask_dir = case / "2.seg" if include_labels and has_seg else case
+    return write_project_json(
+        case,
+        machine,
+        image_dir=case,
+        mask_dir=mask_dir,
+        include_masks=include_labels,
+        packed=True,
+    )
 
 
 def csv_paths(folder: str | Path) -> list[Path]:

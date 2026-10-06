@@ -41,6 +41,25 @@ def test_write_case_project_uses_seg_subdir(tmp_path):
     text = dest.read_text(encoding="utf-8")
     assert '"image": "CT.mha"' in text
     assert '"file": "2.seg/HU1.mha"' in text
+    dest = write_case_project(case, {"num_of_HU_masks": 1}, include_labels=False)
+    text = dest.read_text(encoding="utf-8")
+    assert '"image": "CT.mha"' in text
+    assert "HU1" not in text
+
+
+def test_write_case_project_uses_packed_labels(tmp_path):
+    case = tmp_path / "20260921_083102"
+    seg = case / "2.seg"
+    seg.mkdir(parents=True)
+    _touch_image(case, "CT")
+    _touch_image(seg, "masks_packed")
+    (seg / "masks_packed.json").write_text('{"labels": {"1": "HU1"}}\n', encoding="utf-8")
+    dest = write_case_project(case, {"num_of_HU_masks": 1})
+    text = dest.read_text(encoding="utf-8")
+    assert '"file": "2.seg/masks_packed.mha"' in text
+    assert '"label": 1' in text
+    assert '"packed_labels"' in text
+    assert "HU1.mha" not in text
 
 
 def test_csv_paths_skips_copy(tmp_path):

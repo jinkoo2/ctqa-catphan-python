@@ -1,13 +1,26 @@
 {
   "Institution": "Example Cancer Center",
+  "RunMode": "Clinic",
+  "Identity": {
+    "user_id_method": "OSUser",
+    "oidc": {
+      "issuer": "https://idp.example.edu/realms/example",
+      "client_id": "ctqa-catphan",
+      "scopes": "openid profile email",
+      "redirect_uri": "http://127.0.0.1:17844/callback",
+      "registration_url": "https://idp.example.edu/realms/example/account/"
+    }
+  },
   "Viewer": {
     "vtk_image_labeler_3d": ""
+  },
+  "Elastix": {
+    "elastix_dir": "C:\\elastix"
   },
   "Watcher": {
     "watch_path": "\\\\fileserver\\QA\\CT_Import",
     "data_root": "\\\\fileserver\\QA\\CTQA-CatPhan",
-    "dicom_sort_base_dir": "C:\\ctqa_tmp",
-    "directory_name_contains": "DailyQA",
+    "CASE_FOLDER_NAME_REGEX": "^\\d{8}_DailyQA$",
     "min_num_of_files": 401,
     "queued_case_poll_sec": 10.0,
     "max_wait_cycles": 180,
@@ -44,6 +57,24 @@
       "webhook_url": ""
     }
   },
+  "PostProcessing": [
+    {
+      "type": "docuforms2_ctqa",
+      "enabled": false,
+      "backend_url": "https://docuforms.example.edu:9001",
+      "verify_ssl": false,
+      "dry_run": false,
+      "attach_dcm_zip": true,
+      "attach_pdf": true,
+      "resubmit": false,
+      "timeout_sec": 300,
+      "form_ids": [
+        {"machine": "CTSim1", "form_id": "ctqa_catphan_604"}
+      ],
+      "email_success_event_to": ["john.doe@example.edu"],
+      "email_failure_event_to": ["john.doe@example.edu"]
+    }
+  ],
   "MACHINES": [
     {
       "NAME": "CTSim1",
@@ -53,6 +84,7 @@
       ],
       "machine_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1",
       "baseline_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\baseline",
+      "elastix_param_dir": "",
       "cases_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\cases",
       "html_report_template": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\report_templates\\full\\report.html",
       "num_of_HU_masks": 9,

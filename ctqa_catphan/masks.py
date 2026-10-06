@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,7 @@ import SimpleITK as sitk
 
 from .app_settings import label_map, mask_stems
 from .image_io import find_image, read_image, write_mha
+from .registration import is_unc_path, run_transformix, scratch_parent, write_label_transform_param
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,9 @@ def load_label_map(path: Path) -> dict[int, str]:
 
 def unpack_labels(packed: sitk.Image, mapping: dict[int, str]) -> dict[str, sitk.Image]:
     arr = sitk.GetArrayFromImage(packed)
+    if np.issubdtype(arr.dtype, np.floating):
+        arr = np.rint(arr)
+    arr = arr.astype(np.int32, copy=False)
     out: dict[str, sitk.Image] = {}
     for value, name in mapping.items():
         binary = (arr == int(value)).astype(np.uint8)
@@ -111,6 +117,41 @@ def unpack_labels(packed: sitk.Image, mapping: dict[int, str]) -> dict[str, sitk
         image.CopyInformation(packed)
         out[name] = image
     return out
+
+
+def load_named_masks(mask_dir: str | Path, machine: dict | None = None) -> dict[str, sitk.Image]:
+    """In-memory binary masks from packed labels, else individual files."""
+    folder = Path(mask_dir)
+    packed = find_image(folder, PACKED_STEM)
+    mapping_path = folder / PACKED_JSON
+    if packed is not None and mapping_path.is_file():
+        mapping = load_label_map(mapping_path)
+        masks = unpack_labels(read_image(packed), mapping)
+        logger.info("loaded %s packed labels from %s", len(masks), packed.name)
+        return masks
+    stems = mask_stems(machine or {})
+    if not stems:
+        return {}
+    out: dict[str, sitk.Image] = {}
+    missing: list[str] = []
+    for stem in stems:
+        found = find_image(folder, stem)
+        if found is None:
+            missing.append(stem)
+            continue
+        out[stem] = read_image(found)
+    if missing:
+        raise FileNotFoundError(f"mask not found: {folder} ({', '.join(missing)})")
+    return out
+
+
+def _warn_empty_labels(packed: sitk.Image, mapping: dict[int, str]) -> None:
+    arr = sitk.GetArrayFromImage(packed)
+    if np.issubdtype(arr.dtype, np.floating):
+        arr = np.rint(arr)
+    for value, name in mapping.items():
+        if int(np.count_nonzero(arr == int(value))) == 0:
+            logger.warning("transferred mask %s is empty", name)
 
 
 def transfer_packed(
@@ -130,15 +171,53 @@ def transfer_packed(
     transferred = resampler.Execute(packed)
     transferred = sitk.Cast(transferred, sitk.sitkUInt16)
     seg_dir.mkdir(parents=True, exist_ok=True)
-    write_mha(transferred, seg_dir / f"{PACKED_STEM}.mha")
-    (seg_dir / PACKED_JSON).write_text(mapping_path.read_text(encoding="utf-8"), encoding="utf-8")
-    written: dict[str, Path] = {}
-    for name, mask in unpack_labels(transferred, mapping).items():
-        written[name] = write_mha(mask, seg_dir / f"{name}.mha")
-        count = int(np.count_nonzero(sitk.GetArrayFromImage(mask)))
-        if count == 0:
-            logger.warning("transferred mask %s is empty", name)
-    return written
+    dest = write_mha(transferred, seg_dir / f"{PACKED_STEM}.mha")
+    json_dest = seg_dir / PACKED_JSON
+    json_dest.write_text(mapping_path.read_text(encoding="utf-8"), encoding="utf-8")
+    _warn_empty_labels(transferred, mapping)
+    return {PACKED_STEM: dest, "labels": json_dest}
+
+
+def transfer_masks_transformix(
+    baseline_dir: str | Path,
+    machine: dict,
+    seg_dir: str | Path,
+    transform_param: str | Path,
+    *,
+    elastix_dir: str | Path | None = None,
+) -> dict[str, Path]:
+    """Warp packed baseline labels once with transformix.exe (no unpack to disk)."""
+    dest = Path(seg_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    packed_path = pack_baseline(baseline_dir, machine)
+    mapping_path = packed_paths(Path(baseline_dir))[1]
+    mapping = load_label_map(mapping_path)
+    work = Path(tempfile.mkdtemp(prefix="tfx_", dir=str(scratch_parent())))
+    try:
+        moving = packed_path
+        if is_unc_path(packed_path):
+            moving = work / packed_path.name
+            shutil.copy2(packed_path, moving)
+            logger.info("copied packed masks locally for transformix: %s", moving)
+        tp_labels = write_label_transform_param(
+            Path(transform_param),
+            Path(transform_param).with_name("TransformParameters.labels.txt"),
+        )
+        logger.info("transformix packed labels %s -> %s", packed_path.name, dest)
+        result = run_transformix(moving, work, tp_labels, elastix_dir=elastix_dir)
+        transferred = read_image(result)
+        if transferred.GetPixelID() != sitk.sitkUInt16:
+            transferred = sitk.Cast(
+                sitk.Round(sitk.Cast(transferred, sitk.sitkFloat32)),
+                sitk.sitkUInt16,
+            )
+        packed_dest = write_mha(transferred, dest / f"{PACKED_STEM}.mha")
+        json_dest = dest / PACKED_JSON
+        json_dest.write_text(mapping_path.read_text(encoding="utf-8"), encoding="utf-8")
+        _warn_empty_labels(transferred, mapping)
+        return {PACKED_STEM: packed_dest, "labels": json_dest}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 def convert_nrrd_dir(folder: str | Path) -> list[Path]:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import shutil
 import threading
 import time
 from datetime import datetime
@@ -11,7 +13,7 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from .app_settings import load_settings, machine_by_station, watcher_settings
+from .app_settings import load_settings, machine_by_station, watcher_case_folder_regex, watcher_settings
 from .dicom_io import (
     case_stamp_from_info,
     dicom_series_to_mha,
@@ -21,9 +23,9 @@ from .dicom_io import (
 from .emailer import send_event, send_error_email
 from .param import Param
 from .pipeline import copy_tree_files, run_case
+from .registration import scratch_parent
 
 logger = logging.getLogger(__name__)
-
 
 class WatchPathUnavailable(RuntimeError):
     pass
@@ -50,35 +52,57 @@ def wait_for_files(folder: Path, min_files: int, poll_sec: float, max_cycles: in
 
 def process_import_dir(import_dir: Path, settings: dict) -> None:
     cfg = watcher_settings(settings)
-    sort_base = Path(str(cfg.get("dicom_sort_base_dir") or r"C:\ctqa_tmp"))
+    sort_base = scratch_parent()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    sort_dir = sort_base / stamp
+    sort_dir = sort_base / f"ctqa_sort_{stamp}"
     sort_dir.mkdir(parents=True, exist_ok=True)
-    logger.info("sorting DICOM from %s -> %s", import_dir, sort_dir)
-    sort_files_by_patient_study_series(import_dir, sort_dir, delete_source_files=False)
-    min_series = int(cfg.get("min_series_dicom_files") or 100)
-    for series in series_dirs(sort_dir):
-        dcms = list(series.glob("*.dcm"))
-        if len(dcms) < min_series:
-            logger.info("skip series %s (%s files)", series, len(dcms))
-            continue
-        dicom_series_to_mha(series, series)
-        info = Param(series / "info.txt")
-        station = info.get_value("StationName")
-        machine = machine_by_station(station, settings)
-        if machine is None:
-            logger.error("no machine for StationName=%s", station)
-            continue
-        cases_dir = Path(str(machine.get("cases_dir") or ""))
-        dest = cases_dir / case_stamp_from_info(series / "info.txt")
-        dest.mkdir(parents=True, exist_ok=True)
-        copy_tree_files(series, dest)
-        logger.info("running CTQA for %s", dest)
-        run_case(dest, machine_name=str(machine.get("NAME") or ""), send_email=True, data=settings)
+    published = False
+    try:
+        logger.info("sorting DICOM from %s -> %s", import_dir, sort_dir)
+        sort_files_by_patient_study_series(import_dir, sort_dir, delete_source_files=False)
+        min_series = int(cfg.get("min_series_dicom_files") or 100)
+        for series in series_dirs(sort_dir):
+            dcms = list(series.glob("*.dcm"))
+            if len(dcms) < min_series:
+                logger.info("skip series %s (%s files)", series, len(dcms))
+                continue
+            dicom_series_to_mha(series, series)
+            info = Param(series / "info.txt")
+            station = info.get_value("StationName")
+            machine = machine_by_station(station, settings)
+            if machine is None:
+                logger.error("no machine for StationName=%s", station)
+                continue
+            cases_dir = Path(str(machine.get("cases_dir") or ""))
+            dest = cases_dir / case_stamp_from_info(series / "info.txt")
+            logger.info("running CTQA locally in %s", series)
+            run_case(series, machine_name=str(machine.get("NAME") or ""), send_email=True, data=settings)
+            logger.info("copying finished case to %s", dest)
+            copy_tree_files(series, dest)
+            published = True
+            logger.info("published case %s", dest)
+        if published:
+            shutil.rmtree(sort_dir, ignore_errors=True)
+        else:
+            logger.info("no case published; keeping local work dir %s", sort_dir)
+    except Exception:
+        logger.info("keeping local work dir after failure: %s", sort_dir)
+        raise
 
 
-def _should_handle(folder: Path, contains: str) -> bool:
-    return contains.lower() in folder.name.lower()
+def case_folder_matches(name: str, regex: str | None) -> bool:
+    pattern = str(regex or "").strip()
+    if not pattern:
+        return True
+    try:
+        return re.fullmatch(pattern, name) is not None
+    except re.error:
+        logger.warning("invalid CASE_FOLDER_NAME_REGEX %r", pattern)
+        return False
+
+
+def _should_handle(folder: Path, regex: str) -> bool:
+    return case_folder_matches(folder.name, regex)
 
 
 def watch(watch_path: str = "", data: dict | None = None) -> None:
@@ -87,7 +111,7 @@ def watch(watch_path: str = "", data: dict | None = None) -> None:
     path = Path(watch_path or cfg.get("watch_path") or "")
     if not path.is_dir():
         raise WatchPathUnavailable(f"watch_path not found: {path}")
-    contains = str(cfg.get("directory_name_contains") or "DailyQA")
+    case_regex = watcher_case_folder_regex(settings)
     min_files = int(cfg.get("min_num_of_files") or 401)
     poll = float(cfg.get("queued_case_poll_sec") or 10.0)
     max_cycles = int(cfg.get("max_wait_cycles") or 180)
@@ -103,8 +127,8 @@ def watch(watch_path: str = "", data: dict | None = None) -> None:
                 return
             seen.add(key)
         try:
-            if not _should_handle(folder, contains):
-                logger.info("not a DailyQA folder, skip: %s", folder)
+            if not _should_handle(folder, case_regex):
+                logger.info("not a case folder (%s), skip: %s", case_regex or "any", folder)
                 return
             send_event("CTQA-CatPhan DailyQA folder", str(folder), settings)
             if not wait_for_files(folder, min_files, poll, max_cycles):
@@ -142,7 +166,7 @@ def watch(watch_path: str = "", data: dict | None = None) -> None:
             if do_scan:
                 try:
                     for child in path.iterdir():
-                        if child.is_dir() and _should_handle(child, contains):
+                        if child.is_dir() and _should_handle(child, case_regex):
                             threading.Thread(target=handle, args=(child,), daemon=True).start()
                 except OSError:
                     logger.exception("disk scan failed for %s", path)

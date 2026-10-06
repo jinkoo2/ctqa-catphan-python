@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ctqa-catphan"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python port of CatPhan CT morning QA (CTQA-CatPhan)"
 requires-python = ">=3.10"
 dependencies = [
@@ -25,6 +25,9 @@ ctqa-catphan = "ctqa_catphan.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["ctqa_catphan*"]
+
+[tool.setuptools.package-data]
+ctqa_catphan = ["etx_params/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -19,3 +19,13 @@ def test_prepare_argv_settings_env(monkeypatch, tmp_path):
     settings.write_text("{}", encoding="utf-8")
     prepare_argv(["--settings", str(settings), "analyze", "x"])
     assert os.environ["CTQA_CATPHAN_SETTINGS"].endswith("settings.json")
+
+
+def test_prepare_argv_users_env(monkeypatch, tmp_path):
+    folder = tmp_path / "_users"
+    monkeypatch.delenv("CTQA_CATPHAN_USERS_DIR", raising=False)
+    assert prepare_argv(["--users", str(folder)]) == ["gui"]
+    assert os.environ["CTQA_CATPHAN_USERS_DIR"] == str(folder.resolve())
+    monkeypatch.delenv("CTQA_CATPHAN_USERS_DIR", raising=False)
+    assert prepare_argv([f"--users-dir={folder}", "--mode", "service"]) == ["watch"]
+    assert os.environ["CTQA_CATPHAN_USERS_DIR"] == str(folder.resolve())
