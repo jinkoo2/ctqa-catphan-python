@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from PyQt5.QtCore import Qt, QUrl
+from PyQt5.QtCore import QSettings, QTimer, Qt, QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QApplication,
@@ -293,7 +293,16 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("CTQA-CatPhan settings")
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+        )
+        self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.did_save = False
+        self._qs = QSettings("MachineQA", "CTQACatPhan")
         self._data = load_settings()
         email = email_settings(self._data)
         hooks = chat_webhook_urls(self._data)
@@ -480,7 +489,8 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs, 1)
         layout.addWidget(buttons)
-        self.resize(640, 520)
+        self.resize(960, 680)
+        self._restore_window_state()
 
     def _general_page(self) -> QWidget:
         page = QWidget()
@@ -814,6 +824,29 @@ class SettingsDialog(QDialog):
             QMessageBox.information(self, "Test chat", "Posted.")
         except Exception as exc:
             QMessageBox.critical(self, "Test chat", str(exc))
+
+    def _restore_window_state(self) -> None:
+        geom = self._qs.value("settings/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+            return
+        QTimer.singleShot(0, self.showMaximized)
+
+    def _save_window_state(self) -> None:
+        self._qs.setValue("settings/geometry", self.saveGeometry())
+        self._qs.sync()
+
+    def accept(self) -> None:
+        self._save_window_state()
+        super().accept()
+
+    def reject(self) -> None:
+        self._save_window_state()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._save_window_state()
+        super().closeEvent(event)
 
     def _persist(self) -> None:
         data = self._preview()

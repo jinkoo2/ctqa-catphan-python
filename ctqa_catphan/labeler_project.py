@@ -203,15 +203,15 @@ def labeler_command(project_json: str | Path, data: dict | None = None) -> list[
     if configured:
         exe = Path(configured)
         if exe.suffix.lower() == ".py":
-            return [sys.executable, str(exe), json_path]
-        return [str(exe), json_path]
+            return [sys.executable, str(exe), "--project", json_path]
+        return [str(exe), "--project", json_path]
     found = shutil.which("vtk-image-labeler-3d") or shutil.which("ImageLabeler3D")
     if found:
-        return [found, json_path]
+        return [found, "--project", json_path]
     app_py = _bundled_labeler_app()
     if app_py is not None:
-        return [sys.executable, str(app_py), json_path]
-    return [sys.executable, "-m", "vtk_image_labeler_3d", json_path]
+        return [sys.executable, str(app_py), "--project", json_path]
+    return [sys.executable, "-m", "vtk_image_labeler_3d", "--project", json_path]
 
 
 def _bundled_labeler_app() -> Path | None:
@@ -229,8 +229,5 @@ def _bundled_labeler_app() -> Path | None:
 
 def launch_labeler(project_json: str | Path, data: dict | None = None) -> subprocess.Popen:
     cmd = labeler_command(project_json, data)
-    logger.info("launch Image Labeler 3D: %s", " ".join(cmd))
-    cwd = None
-    if len(cmd) >= 2 and cmd[1].lower().endswith("app.py"):
-        cwd = str(Path(cmd[1]).parent)
-    return subprocess.Popen(cmd, cwd=cwd)
+    logger.info("launch Image Labeler 3D: %s", subprocess.list2cmdline(cmd))
+    return subprocess.Popen(cmd)

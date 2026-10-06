@@ -102,6 +102,32 @@ def test_html_rows_from_json(tmp_path: Path):
     assert "Pass" in html
 
 
+def test_write_report_phantom_tokens(tmp_path: Path):
+    from ctqa_catphan.report import write_report
+
+    case = tmp_path / "20240101"
+    baseline = tmp_path / "baseline"
+    result = tmp_path / "3.analysis"
+    case.mkdir()
+    baseline.mkdir()
+    result.mkdir()
+    (case / "info.txt").write_text("PatientName=Kim\nStudyDate=20240101\nStudyTime=080000\n", encoding="utf-8")
+    template = tmp_path / "report.html"
+    template.write_text("{{{machine}}} {{{phantom}}} {{{phantom_id}}}", encoding="utf-8")
+    dest = write_report(
+        case,
+        baseline,
+        result,
+        {
+            "NAME": "CTSim1",
+            "html_report_template": str(template),
+            "phantom": {"id": "catphan604", "name": "Catphan 604"},
+        },
+    )
+    text = dest.read_text(encoding="utf-8")
+    assert text == "CTSim1 Catphan 604 catphan604"
+
+
 def test_evaluate_any_fail_is_case_fail():
     case = {"HU": {"labels": ["HU1", "HU2"], "values": [10.0, 20.0]}}
     baseline = {"HU": {"labels": ["HU1", "HU2"], "values": [10.0, 10.0]}}

@@ -23,6 +23,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .labeler_project import launch_labeler, write_case_project
+from .app_settings import machine_display_name, machine_name
 from .report import analysis_is_done, build_case_report, _fmt
 
 logger = logging.getLogger(__name__)
@@ -71,15 +72,17 @@ class CasePage(QWidget):
 
         self.header_when = QLabel()
         self.header_user = QLabel()
+        self.header_machine = QLabel()
         self.header_result = QLabel()
         self.header_result.setStyleSheet("font-weight: 600;")
-        for label in (self.header_when, self.header_user, self.header_result):
+        for label in (self.header_when, self.header_user, self.header_machine, self.header_result):
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
 
         meta = QHBoxLayout()
         meta.setSpacing(24)
         meta.addWidget(self.header_when)
         meta.addWidget(self.header_user)
+        meta.addWidget(self.header_machine)
         meta.addWidget(self.header_result)
         meta.addStretch(1)
 
@@ -143,6 +146,9 @@ class CasePage(QWidget):
         when = report.get("datetime") or "—"
         self.header_when.setText(f"Date/Time   {when}")
         self.header_user.setText(f"Operator   {report.get('operator') or 'NA'}")
+        machine_label = machine_display_name(self.machine) or machine_name(self.machine)
+        self.header_machine.setText(f"Machine   {machine_label}" if machine_label else "")
+        self.header_machine.setVisible(bool(machine_label))
         result = str(report.get("result") or "new").lower()
         self.header_result.setText(result.upper())
         color = {"pass": _PASS, "fail": _FAIL}.get(result, _MUTED)

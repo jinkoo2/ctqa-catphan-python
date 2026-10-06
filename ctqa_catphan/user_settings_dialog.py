@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -36,9 +36,17 @@ class UserSettingsDialog(QDialog):
     def __init__(self, parent=None, *, prompt_email: bool = False):
         super().__init__(parent)
         self.setWindowTitle("User settings")
+        self.setWindowFlags(
+            Qt.Window
+            | Qt.WindowTitleHint
+            | Qt.WindowSystemMenuHint
+            | Qt.WindowMinMaxButtonsHint
+            | Qt.WindowCloseButtonHint
+        )
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         self.resize(520, 560)
         self.did_save = False
+        self._qs = QSettings("MachineQA", "CTQACatPhan")
         profile = current_user_profile() or {}
 
         self.hint = QLabel()
@@ -106,9 +114,31 @@ class UserSettingsDialog(QDialog):
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.hint)
-        layout.addLayout(form)
+        layout.addLayout(form, 1)
         layout.addWidget(note)
         layout.addLayout(buttons)
+        self._restore_window_state()
+
+    def _restore_window_state(self) -> None:
+        geom = self._qs.value("user_settings/geometry")
+        if geom is not None:
+            self.restoreGeometry(geom)
+
+    def _save_window_state(self) -> None:
+        self._qs.setValue("user_settings/geometry", self.saveGeometry())
+        self._qs.sync()
+
+    def accept(self) -> None:
+        self._save_window_state()
+        super().accept()
+
+    def reject(self) -> None:
+        self._save_window_state()
+        super().reject()
+
+    def closeEvent(self, event):
+        self._save_window_state()
+        super().closeEvent(event)
 
     def _checked_machines(self) -> list[str]:
         names: list[str] = []

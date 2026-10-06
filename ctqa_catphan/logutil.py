@@ -96,21 +96,84 @@ def stream_isatty(stream) -> bool:
         return False
 
 
-def attach_console_if_needed() -> None:
+def windows_command_line_argv() -> list[str]:
+    """Windows process argv from GetCommandLineW (not Python/PyInstaller sys.argv)."""
     if sys.platform != "win32":
-        return
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        GetCommandLineW = ctypes.windll.kernel32.GetCommandLineW
+        CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
+        LocalFree = ctypes.windll.kernel32.LocalFree
+        GetCommandLineW.restype = ctypes.c_wchar_p
+        CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        argc = ctypes.c_int(0)
+        argv_p = CommandLineToArgvW(GetCommandLineW(), ctypes.byref(argc))
+        if not argv_p:
+            return []
+        out = [argv_p[i] for i in range(argc.value)]
+        LocalFree(argv_p)
+        return out
+    except Exception:
+        return []
+
+
+def _rebind_stdio_to_console() -> None:
+    out = open("CONOUT$", "w", encoding="utf-8", buffering=1, errors="replace")
+    err = open("CONOUT$", "w", encoding="utf-8", buffering=1, errors="replace")
+    sys.stdout = out
+    sys.stderr = err
+    sys.__stdout__ = out
+    sys.__stderr__ = err
+
+
+def attach_console_if_needed(*, alloc: bool = False) -> str:
+    """Attach stdout to a console so windowed frozen apps can print ``--help``.
+
+    Returns ``existing``, ``parent``, ``alloc``, or ``""``.
+    """
+    if sys.platform != "win32":
+        return "existing" if stream_isatty(sys.stdout) or stream_isatty(sys.stderr) else ""
     if stream_isatty(sys.stdout) or stream_isatty(sys.stderr):
-        return
+        return "existing"
     try:
         import ctypes
 
         kernel32 = ctypes.windll.kernel32
-        if not kernel32.AttachConsole(-1) and not kernel32.AllocConsole():
-            return
-        sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
-        sys.stderr = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+        kernel32.GetConsoleWindow.restype = ctypes.c_void_p
+        if kernel32.GetConsoleWindow():
+            _rebind_stdio_to_console()
+            return "existing"
+        if kernel32.AttachConsole(0xFFFFFFFF):
+            _rebind_stdio_to_console()
+            return "parent"
+        if alloc and kernel32.AllocConsole():
+            _rebind_stdio_to_console()
+            return "alloc"
     except Exception:
+        return ""
+    return ""
+
+
+def finish_console_help(kind: str) -> None:
+    """Keep an allocated console visible; flush after parent-console help."""
+    try:
+        if sys.stdout is not None:
+            sys.stdout.flush()
+        if sys.stderr is not None:
+            sys.stderr.flush()
+    except Exception:
+        pass
+    if kind != "alloc":
         return
+    try:
+        print("Press Enter to close...", flush=True)
+        input()
+    except Exception:
+        pass
 
 
 def ensure_stdio() -> None:

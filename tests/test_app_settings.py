@@ -2,8 +2,12 @@ from ctqa_catphan.app_settings import (
     case_recency_key,
     SETTINGS_NAME,
     elastix_dir_setting,
+    is_case_folder_name,
     list_case_folders,
     machine_by_station,
+    machine_display_name,
+    phantom_id,
+    phantom_name,
     save_settings,
     simple_machine_name,
     strip_jsonc,
@@ -27,6 +31,19 @@ def test_machine_by_station():
     m = machine_by_station("CTSIM", data)
     assert m["NAME"] == "CTSim1"
     assert machine_by_station("unknown", data) is None
+
+
+def test_machine_phantom_display():
+    machine = {
+        "NAME": "CTSim1",
+        "phantom": {"id": "catphan604", "name": "Catphan 604"},
+    }
+    assert phantom_id(machine) == "catphan604"
+    assert phantom_name(machine) == "Catphan 604"
+    assert machine_display_name(machine) == "CTSim1 — Catphan 604"
+    assert machine_display_name({"NAME": "CTSim1"}) == "CTSim1"
+    assert phantom_id({}) == ""
+    assert phantom_name({"phantom": "catphan604"}) == ""
 
 
 def test_is_simple_run_mode(tmp_path, monkeypatch):
@@ -65,7 +82,13 @@ def test_list_case_folders(tmp_path):
     (cases / "20260929_080000").mkdir()
     (cases / "20200101_000000").mkdir()
     (cases / ".skip").mkdir()
+    (cases / "scratch").mkdir()
+    (cases / "10022026_DailyQA").mkdir()
+    (cases / "20260928").mkdir()
     folders = list_case_folders({"cases_dir": str(cases)})
     assert [p.name for p in folders] == ["20260929_080000", "20260928_075003", "20200101_000000"]
     assert case_recency_key(cases / "20260929_080000") > case_recency_key(cases / "20200101_000000")
     assert list_case_folders({"cases_dir": str(tmp_path / "missing")}) == []
+    assert is_case_folder_name("20260928_075003")
+    assert not is_case_folder_name("10022026_DailyQA")
+    assert not is_case_folder_name("20261301_000000")

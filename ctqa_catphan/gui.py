@@ -38,6 +38,8 @@ from .app_settings import (
     list_case_folders,
     load_settings,
     machine_by_name,
+    machine_display_name,
+    machine_name,
     named_machines,
     simple_machine_name,
 )
@@ -104,11 +106,28 @@ def window_title(case: str = "") -> str:
     return " — ".join(parts)
 
 
+def _restore_layout(widget, settings: QSettings, key: str, splitter: QSplitter | None = None) -> None:
+    geom = settings.value(f"{key}/geometry")
+    if geom is not None:
+        widget.restoreGeometry(geom)
+    if splitter is not None:
+        state = settings.value(f"{key}/splitter")
+        if state is not None:
+            splitter.restoreState(state)
+
+
+def _save_layout(widget, settings: QSettings, key: str, splitter: QSplitter | None = None) -> None:
+    settings.setValue(f"{key}/geometry", widget.saveGeometry())
+    if splitter is not None:
+        settings.setValue(f"{key}/splitter", splitter.saveState())
+    settings.sync()
+
+
 def case_display_name(folder: Path | None, machine: dict | None = None) -> str:
     if folder is None:
         return ""
     case = Path(folder).name
-    name = str((machine or {}).get("NAME") or "").strip() or simple_machine_name(folder)
+    name = machine_name(machine) or simple_machine_name(folder)
     if not name:
         return case
     return f"{name}/{case}"
@@ -341,7 +360,7 @@ class OpenCaseDialog(QDialog):
 
         self.machine_combo = QComboBox()
         for machine in self.machines:
-            self.machine_combo.addItem(str(machine["NAME"]).strip(), machine)
+            self.machine_combo.addItem(machine_display_name(machine) or machine_name(machine), machine)
 
         self.filter_combo = QComboBox()
         for status in ("all", "new", "fail", "pass"):
@@ -386,6 +405,7 @@ class OpenCaseDialog(QDialog):
         lists.setChildrenCollapsible(False)
         lists.setStretchFactor(0, 1)
         lists.setStretchFactor(1, 1)
+        self.splitter = lists
 
         layout = QVBoxLayout(self)
         layout.addLayout(top)
@@ -395,20 +415,39 @@ class OpenCaseDialog(QDialog):
         self._settings = getattr(parent, "qs", None) if parent is not None else None
         if self._settings is None:
             self._settings = QSettings("MachineQA", "CTQACatPhan")
+        self._splitter_restored = False
+        _restore_layout(self, self._settings, "open_case")
         last_filter = str(self._settings.value("open_case/filter", "all") or "all")
         filter_idx = self.filter_combo.findData(last_filter)
         self.filter_combo.setCurrentIndex(filter_idx if filter_idx >= 0 else 0)
 
-        idx = self.machine_combo.findText(last_machine)
+        idx = self._index_for_machine_name(last_machine)
         if idx >= 0:
             self.machine_combo.setCurrentIndex(idx)
         self.machine_combo.currentIndexChanged.connect(self._start_scan)
         self.filter_combo.currentIndexChanged.connect(self._on_filter_changed)
         self._start_scan()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._splitter_restored:
+            self._splitter_restored = True
+            _restore_layout(self, self._settings, "open_case", self.splitter)
+
+    def _index_for_machine_name(self, name: str) -> int:
+        want = (name or "").strip().lower()
+        if not want:
+            return -1
+        for i in range(self.machine_combo.count()):
+            machine = self.machine_combo.itemData(i) or {}
+            if machine_name(machine).lower() == want:
+                return i
+        return self.machine_combo.findText(name)
+
     def done(self, result):
         self._scan_gen += 1
         self._disconnect_scan_worker()
+        _save_layout(self, self._settings, "open_case", self.splitter)
         super().done(result)
 
     def _on_filter_changed(self, *_args):
@@ -557,9 +596,14 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.stack, 1)
         self.setCentralWidget(central)
         self.statusBar().showMessage("Ready")
+        _restore_layout(self, self.qs, "main")
         self._apply_run_mode_ui()
         self._refresh_heading()
         QTimer.singleShot(0, self._after_shown)
+
+    def closeEvent(self, event):
+        _save_layout(self, self.qs, "main")
+        super().closeEvent(event)
 
     def _make_action(self, text, icon_name, slot, shortcut=None):
         act = QAction(_toolbar_icon(icon_name), text, self)
@@ -773,7 +817,7 @@ class MainWindow(QMainWindow):
         if dlg.exec_() != QDialog.Accepted or dlg.selected_case is None:
             return None
         machine = dlg.selected_machine or machines[0]
-        self.qs.setValue("last_machine", str(machine.get("NAME") or ""))
+        self.qs.setValue("last_machine", machine_name(machine))
         self.qs.setValue("last_directory", str(dlg.selected_case))
         return dlg.selected_case, machine
 
@@ -817,7 +861,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP_TITLE, f"baseline_dir not found:\n{folder}")
             return
         self._open_values(
-            title=f"Baseline — {machine.get('NAME') or folder.name}",
+            title=f"Baseline — {machine_display_name(machine) or folder.name}",
             csv_dir=folder,
             project_writer=lambda: write_baseline_project(folder, machine),
             can_edit_masks=True,
@@ -919,7 +963,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Analyzing {page.folder.name}…")
         self._worker = AnalyzeWorker(
             page.folder,
-            str(page.machine.get("NAME") or ""),
+            machine_name(page.machine),
             self.settings,
         )
         self._worker.finished_ok.connect(self._on_analysis_ok)

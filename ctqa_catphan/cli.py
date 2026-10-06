@@ -7,7 +7,13 @@ import os
 import sys
 from pathlib import Path
 
-from .logutil import attach_console_if_needed, configure_logging, ensure_stdio, stream_isatty
+from .logutil import (
+    attach_console_if_needed,
+    configure_logging,
+    ensure_stdio,
+    finish_console_help,
+    windows_command_line_argv,
+)
 
 KNOWN_COMMANDS = {
     "analyze",
@@ -36,6 +42,17 @@ def _env_path(value: str) -> str:
     except OSError:
         pass
     return str(path)
+
+
+def process_argv(argv: list[str] | None = None) -> list[str]:
+    """``sys.argv[1:]``, or the Windows command line when a frozen exe drops flags."""
+    if argv is not None:
+        return list(argv)
+    if getattr(sys, "frozen", False):
+        win = windows_command_line_argv()
+        if len(win) > 1:
+            return list(win[1:])
+    return list(sys.argv[1:])
 
 
 def wants_help(argv: list[str]) -> bool:
@@ -100,15 +117,15 @@ def prepare_argv(argv: list[str] | None = None) -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    raw = list(sys.argv[1:] if argv is None else argv)
-    if wants_help(raw):
-        if getattr(sys, "frozen", False) and not stream_isatty(sys.stdout) and not stream_isatty(
-            sys.stderr
-        ):
-            attach_console_if_needed()
-    else:
+    raw = process_argv(argv)
+    console_kind = ""
+    if wants_help(raw) and getattr(sys, "frozen", False):
+        console_kind = attach_console_if_needed(alloc=True)
+        if console_kind in ("parent", "alloc"):
+            print(flush=True)
+    elif not wants_help(raw):
         ensure_stdio()
-    argv = prepare_argv(argv)
+    argv = prepare_argv(raw)
     parser = argparse.ArgumentParser(
         prog="CTQA-CatPhan",
         epilog=(
@@ -158,7 +175,11 @@ def main(argv: list[str] | None = None) -> int:
         help="write analysis.result.json and pass/fail result.json from existing results",
     )
 
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit:
+        finish_console_help(console_kind)
+        raise
     configure_logging(verbose=args.verbose, console=True)
 
     if args.cmd == "analyze":

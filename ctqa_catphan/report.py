@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .analysis import RESULT_JSON_NAME, load_analysis_result, table_labels_values
-from .app_settings import mask_count
+from .app_settings import mask_count, machine_name, phantom_id, phantom_name
 from .param import Param
 
 REPORT_SECTIONS = (
@@ -308,6 +308,9 @@ def write_report(
         html.replace("{{{date}}}", study_date)
         .replace("{{{time}}}", study_time)
         .replace("{{{user}}}", user)
+        .replace("{{{machine}}}", machine_name(machine))
+        .replace("{{{phantom}}}", phantom_name(machine))
+        .replace("{{{phantom_id}}}", phantom_id(machine))
         .replace("{{{HU_tol}}}", str(machine.get("HU_tol") or ""))
         .replace("{{{geo_tol}}}", str(machine.get("geo_tol") or ""))
         .replace("{{{DT_tol}}}", str(machine.get("DT_tol") or ""))

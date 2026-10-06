@@ -71,3 +71,16 @@ def test_csv_paths_skips_copy(tmp_path):
     rows = read_csv_table(tmp_path / "HU.csv")
     assert rows[0] == ["HU1"]
     assert rows[1] == ["1"]
+
+
+def test_labeler_command_passes_project_flag(tmp_path, monkeypatch):
+    from ctqa_catphan.labeler_project import labeler_command
+
+    project = tmp_path / "vtk_image_labeler_3d.project.json"
+    project.write_text("{}\n", encoding="utf-8")
+    exe = tmp_path / "ImageLabeler3D.exe"
+    exe.write_bytes(b"")
+    cmd = labeler_command(project, {"Viewer": {"vtk_image_labeler_3d": str(exe)}})
+    assert cmd[0] == str(exe)
+    assert cmd[1] == "--project"
+    assert cmd[2] == str(project.resolve())

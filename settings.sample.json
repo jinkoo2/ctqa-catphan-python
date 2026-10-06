@@ -82,6 +82,10 @@
         "ctsim",
         "ct_sim"
       ],
+      "phantom": {
+        "id": "catphan604",
+        "name": "Catphan 604"
+      },
       "machine_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1",
       "baseline_dir": "\\\\fileserver\\QA\\CTQA-CatPhan\\CTSim1\\baseline",
       "elastix_param_dir": "",

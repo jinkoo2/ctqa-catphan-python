@@ -173,6 +173,16 @@ _CASE_NAME_FORMATS = (
     "%y-%m-%d_%H-%M-%S",
     "%Y%m%d",
 )
+CASE_FOLDER_STAMP_FORMAT = "%Y%m%d_%H%M%S"
+
+
+def is_case_folder_name(name: str) -> bool:
+    """True for processed case folders ``YYYYMMDD_HHmmss``."""
+    try:
+        datetime.strptime(str(name or ""), CASE_FOLDER_STAMP_FORMAT)
+        return True
+    except ValueError:
+        return False
 
 
 def case_recency_key(folder: str | Path) -> tuple:
@@ -196,6 +206,8 @@ def list_case_folders(machine: dict | None) -> list[Path]:
         with os.scandir(root) as it:
             for entry in it:
                 if entry.name.startswith("."):
+                    continue
+                if not is_case_folder_name(entry.name):
                     continue
                 if entry.is_dir(follow_symlinks=False):
                     folders.append(Path(entry.path))
@@ -248,6 +260,33 @@ def machine_by_station(station: str, data: dict | None = None) -> dict | None:
 def default_machine(data: dict | None = None) -> dict | None:
     machines = named_machines(data)
     return machines[0] if machines else None
+
+
+def machine_name(machine: dict | None) -> str:
+    return str((machine or {}).get("NAME") or "").strip()
+
+
+def machine_phantom(machine: dict | None) -> dict:
+    """Optional ``phantom: {id, name}`` on a MACHINES entry (display / later logic)."""
+    block = (machine or {}).get("phantom")
+    return dict(block) if isinstance(block, dict) else {}
+
+
+def phantom_id(machine: dict | None) -> str:
+    return str(machine_phantom(machine).get("id") or "").strip()
+
+
+def phantom_name(machine: dict | None) -> str:
+    return str(machine_phantom(machine).get("name") or "").strip()
+
+
+def machine_display_name(machine: dict | None) -> str:
+    """Machine NAME, with phantom name when set: ``CTSim1 — Catphan 604``."""
+    name = machine_name(machine)
+    phantom = phantom_name(machine)
+    if name and phantom:
+        return f"{name} — {phantom}"
+    return name or phantom
 
 
 def watcher_settings(data: dict | None = None) -> dict:
