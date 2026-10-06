@@ -50,41 +50,78 @@ def wait_for_files(folder: Path, min_files: int, poll_sec: float, max_cycles: in
     return _file_count(folder) >= min_files
 
 
-def process_import_dir(import_dir: Path, settings: dict) -> None:
+def process_import_dir(
+    import_dir: Path,
+    settings: dict,
+    *,
+    send_email: bool = True,
+    strict: bool = False,
+) -> list[tuple[Path, dict]]:
+    """Sort DICOM, analyze, email, and copy finished cases to ``cases_dir``.
+
+    Returns ``(published_case_dir, machine)`` pairs. ``strict=True`` raises instead
+    of skipping a series, and raises if nothing is published.
+    """
     cfg = watcher_settings(settings)
     sort_base = scratch_parent()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     sort_dir = sort_base / f"ctqa_sort_{stamp}"
     sort_dir.mkdir(parents=True, exist_ok=True)
-    published = False
+    published: list[tuple[Path, dict]] = []
+    skipped: list[str] = []
     try:
         logger.info("sorting DICOM from %s -> %s", import_dir, sort_dir)
         sort_files_by_patient_study_series(import_dir, sort_dir, delete_source_files=False)
         min_series = int(cfg.get("min_series_dicom_files") or 100)
-        for series in series_dirs(sort_dir):
+        series_list = series_dirs(sort_dir)
+        if not series_list:
+            msg = f"no DICOM series found in {import_dir}"
+            if strict:
+                raise RuntimeError(msg)
+            logger.info(msg)
+            return published
+        for series in series_list:
             dcms = list(series.glob("*.dcm"))
+            if not dcms:
+                dcms = [p for p in series.iterdir() if p.is_file()]
             if len(dcms) < min_series:
-                logger.info("skip series %s (%s files)", series, len(dcms))
+                msg = f"{series.name} has {len(dcms)} files (need {min_series})"
+                logger.info("skip series %s", msg)
+                skipped.append(msg)
                 continue
             dicom_series_to_mha(series, series)
             info = Param(series / "info.txt")
             station = info.get_value("StationName")
             machine = machine_by_station(station, settings)
             if machine is None:
-                logger.error("no machine for StationName=%s", station)
+                msg = f"no machine for StationName={station!r}"
+                if strict:
+                    raise RuntimeError(msg)
+                logger.error(msg)
+                skipped.append(msg)
                 continue
             cases_dir = Path(str(machine.get("cases_dir") or ""))
             dest = cases_dir / case_stamp_from_info(series / "info.txt")
             logger.info("running CTQA locally in %s", series)
-            run_case(series, machine_name=str(machine.get("NAME") or ""), send_email=True, data=settings)
+            run_case(
+                series,
+                machine_name=str(machine.get("NAME") or ""),
+                send_email=send_email,
+                data=settings,
+            )
             logger.info("copying finished case to %s", dest)
             copy_tree_files(series, dest)
-            published = True
+            published.append((dest, machine))
             logger.info("published case %s", dest)
-        if published:
-            shutil.rmtree(sort_dir, ignore_errors=True)
-        else:
-            logger.info("no case published; keeping local work dir %s", sort_dir)
+        if not published:
+            detail = "; ".join(skipped) if skipped else "no series met min_series_dicom_files"
+            msg = f"no case published from {import_dir}: {detail}"
+            if strict:
+                raise RuntimeError(msg)
+            logger.info("%s; keeping local work dir %s", msg, sort_dir)
+            return published
+        shutil.rmtree(sort_dir, ignore_errors=True)
+        return published
     except Exception:
         logger.info("keeping local work dir after failure: %s", sort_dir)
         raise

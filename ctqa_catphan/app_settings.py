@@ -257,6 +257,28 @@ def machine_by_station(station: str, data: dict | None = None) -> dict | None:
     return None
 
 
+def is_under_directory(path: str | Path, root: str | Path, *, allow_root: bool = False) -> bool:
+    """True when *path* is a subdirectory of *root* (optionally the root itself)."""
+    try:
+        child = Path(path).expanduser().resolve()
+        parent = Path(root).expanduser().resolve()
+    except OSError:
+        return False
+    if child == parent:
+        return allow_root
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        pass
+    child_s = os.path.normcase(str(child))
+    parent_s = os.path.normcase(str(parent))
+    sep = os.sep
+    if not parent_s.endswith(sep):
+        parent_s += sep
+    return child_s.startswith(parent_s)
+
+
 def default_machine(data: dict | None = None) -> dict | None:
     machines = named_machines(data)
     return machines[0] if machines else None

@@ -35,6 +35,7 @@ from .app_settings import (
     default_machine,
     get_institution,
     is_simple_run_mode,
+    is_under_directory,
     list_case_folders,
     load_settings,
     machine_by_name,
@@ -42,6 +43,7 @@ from .app_settings import (
     machine_name,
     named_machines,
     simple_machine_name,
+    watcher_settings,
 )
 from .identity import (
     USER_ID_NONE,
@@ -55,7 +57,7 @@ from .identity import (
     user_needs_email,
 )
 from .analysis import CASE_RESULT_NAME, RESULT_JSON_NAME, analysis_tables_for_display, read_case_result
-from .case_page import AnalyzeWorker, CasePage
+from .case_page import AnalyzeWorker, CasePage, ImportAnalyzeWorker
 from .labeler_project import (
     csv_paths,
     launch_labeler,
@@ -563,7 +565,7 @@ class MainWindow(QMainWindow):
         self.qs = QSettings("MachineQA", "CTQACatPhan")
         self.folder: Path | None = None
         self._child_windows: list[QDialog] = []
-        self._worker: AnalyzeWorker | None = None
+        self._worker: QThread | None = None
         self._busy_page: CasePage | None = None
 
         self.hint = QLabel()
@@ -740,6 +742,11 @@ class MainWindow(QMainWindow):
 
     def _build_toolbar(self) -> QWidget:
         open_act = self._make_action("Open Case", "folder", self.open_case, "Ctrl+O")
+        self.import_dicom_act = self._make_action(
+            "Run Analysis from Dicom Source Folder",
+            "run",
+            self.run_from_dicom_source,
+        )
         settings_act = self._make_action("Settings", "settings", self.open_settings, "Ctrl+,")
         help_act = self._make_action("Help", "help", self._show_help)
         run_act = QAction("Run Analysis", self)
@@ -755,8 +762,10 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(8)
-        for act in (open_act, settings_act):
-            layout.addWidget(self._tool_button(act), 0)
+        layout.addWidget(self._tool_button(open_act), 0)
+        self.import_dicom_btn = self._tool_button(self.import_dicom_act)
+        layout.addWidget(self.import_dicom_btn, 0)
+        layout.addWidget(self._tool_button(settings_act), 0)
         layout.addStretch(1)
         layout.addWidget(self._tool_button(help_act), 0)
         return panel
@@ -766,6 +775,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(
             window_title(case_display_name(page.folder, page.machine) if page else "")
         )
+        clinic = not is_simple_run_mode(self.settings)
+        self.import_dicom_act.setVisible(clinic)
+        self.import_dicom_btn.setVisible(clinic)
         if is_simple_run_mode(self.settings):
             self.hint.setText(
                 "Simple mode: Open Case picks a case folder and opens it as a tab. "
@@ -774,6 +786,8 @@ class MainWindow(QMainWindow):
         else:
             self.hint.setText(
                 "Clinic mode: Open Case picks a machine, then a case under that machine's cases_dir. "
+                "Run Analysis from Dicom Source Folder sorts a DailyQA folder under watch_path "
+                "like the watcher service, emails the report, then opens the published case. "
                 "The case opens as a tab with the same sections as the HTML report. "
                 "Show Baseline on the case tab opens that machine's baseline."
             )
@@ -883,6 +897,65 @@ class MainWindow(QMainWindow):
         self.machine = machine
         self._open_case_tab(folder, machine)
 
+    def run_from_dicom_source(self) -> None:
+        if is_simple_run_mode(self.settings):
+            return
+        if self._worker is not None and self._worker.isRunning():
+            QMessageBox.information(self, APP_TITLE, "Analysis is already running.")
+            return
+        raw_watch = str(watcher_settings(self.settings).get("watch_path") or "").strip()
+        watch_path = Path(raw_watch).expanduser() if raw_watch else Path()
+        if not raw_watch or not watch_path.is_dir():
+            QMessageBox.critical(
+                self,
+                APP_TITLE,
+                f"watch_path not found:\n{raw_watch or '(empty)'}\n\nSet Watcher.watch_path in Settings.",
+            )
+            return
+        last = str(self.qs.value("last_dicom_import", "") or "")
+        start = last if last and Path(last).is_dir() else str(watch_path)
+        chosen = QFileDialog.getExistingDirectory(self, "DICOM source folder", start)
+        if not chosen:
+            return
+        folder = Path(chosen)
+        if not is_under_directory(folder, watch_path):
+            QMessageBox.critical(
+                self,
+                APP_TITLE,
+                f"Choose a DICOM folder under watch_path:\n{watch_path}\n\nSelected:\n{folder}",
+            )
+            return
+        self.qs.setValue("last_dicom_import", str(folder))
+        self.statusBar().showMessage(f"Analyzing DICOM source {folder.name}…")
+        self.import_dicom_act.setEnabled(False)
+        self._worker = ImportAnalyzeWorker(folder, self.settings)
+        self._worker.finished_ok.connect(self._on_import_analyze_ok)
+        self._worker.failed.connect(self._on_import_analyze_fail)
+        self._worker.start()
+
+    def _on_import_analyze_ok(self, rows) -> None:
+        self._worker = None
+        self.import_dicom_act.setEnabled(True)
+        published = list(rows or [])
+        if not published:
+            self.statusBar().showMessage("DICOM source analysis finished with no case.")
+            QMessageBox.critical(self, APP_TITLE, "No case was published from that DICOM folder.")
+            return
+        last_folder = None
+        last_machine = None
+        for dest, machine in published:
+            folder = Path(dest)
+            last_folder, last_machine = folder, machine or {}
+            self.machine = last_machine
+            self._open_case_tab(folder, last_machine)
+        self.statusBar().showMessage(f"Analysis finished: {last_folder.name if last_folder else ''}")
+
+    def _on_import_analyze_fail(self, message: str) -> None:
+        self._worker = None
+        self.import_dicom_act.setEnabled(True)
+        self.statusBar().showMessage("DICOM source analysis failed")
+        QMessageBox.critical(self, APP_TITLE, message)
+
     def _current_page(self) -> CasePage | None:
         page = self.tabs.currentWidget()
         return page if isinstance(page, CasePage) else None
@@ -960,6 +1033,7 @@ class MainWindow(QMainWindow):
             return
         page.set_busy(True)
         self._busy_page = page
+        self.import_dicom_act.setEnabled(False)
         self.statusBar().showMessage(f"Analyzing {page.folder.name}…")
         self._worker = AnalyzeWorker(
             page.folder,
@@ -974,6 +1048,7 @@ class MainWindow(QMainWindow):
         page = self._busy_page
         self._busy_page = None
         self._worker = None
+        self.import_dicom_act.setEnabled(True)
         if page is not None:
             page.set_busy(False)
             page.reload()
@@ -989,6 +1064,7 @@ class MainWindow(QMainWindow):
         page = self._busy_page
         self._busy_page = None
         self._worker = None
+        self.import_dicom_act.setEnabled(True)
         if page is not None:
             page.set_busy(False)
         self.statusBar().showMessage("Analysis failed")
@@ -1013,6 +1089,9 @@ class MainWindow(QMainWindow):
             "Open Case: pick a case; it opens as a tab with Date/Time, Operator, "
             "and the same analysis sections as the HTML report "
             "(HU Consistancy, Geometric Accuracy, Uniformity, Low/High Contrast).\n\n"
+            "Clinic: Run Analysis from Dicom Source Folder picks a DailyQA folder "
+            "under Watcher.watch_path, then sorts DICOM, registers, analyzes, emails "
+            "the HTML report, and opens the published case (same as --mode service).\n\n"
             "On the case tab: View Image opens vtk_image_labeler_3d "
             "(with transferred labels when analysis is done). "
             "View Registration blends today's CT with the registered baseline "

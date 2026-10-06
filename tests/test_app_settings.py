@@ -3,6 +3,7 @@ from ctqa_catphan.app_settings import (
     SETTINGS_NAME,
     elastix_dir_setting,
     is_case_folder_name,
+    is_under_directory,
     list_case_folders,
     machine_by_station,
     machine_display_name,
@@ -92,3 +93,18 @@ def test_list_case_folders(tmp_path):
     assert is_case_folder_name("20260928_075003")
     assert not is_case_folder_name("10022026_DailyQA")
     assert not is_case_folder_name("20261301_000000")
+
+
+def test_is_under_directory(tmp_path):
+    root = tmp_path / "watch"
+    child = root / "10022026_DailyQA"
+    nested = child / "sub"
+    sibling = tmp_path / "watch_other" / "case"
+    nested.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    assert is_under_directory(child, root)
+    assert is_under_directory(nested, root)
+    assert not is_under_directory(root, root)
+    assert is_under_directory(root, root, allow_root=True)
+    assert not is_under_directory(sibling, root)
+    assert not is_under_directory(tmp_path, root)

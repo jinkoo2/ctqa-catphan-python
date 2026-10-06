@@ -59,6 +59,34 @@ class AnalyzeWorker(QThread):
             self.failed.emit(str(exc))
 
 
+class ImportAnalyzeWorker(QThread):
+    """Run the watcher import pipeline (sort, analyze, email, publish) off the UI thread."""
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, import_dir: Path, settings: dict):
+        super().__init__()
+        self.import_dir = Path(import_dir)
+        self.settings = settings
+
+    def run(self):
+        try:
+            from .watcher import process_import_dir
+
+            published = process_import_dir(
+                self.import_dir,
+                self.settings,
+                send_email=True,
+                strict=True,
+            )
+            rows = [(str(dest), machine) for dest, machine in published]
+            self.finished_ok.emit(rows)
+        except Exception as exc:
+            logger.exception("DICOM source analysis failed")
+            self.failed.emit(str(exc))
+
+
 class CasePage(QWidget):
     run_requested = pyqtSignal()
     baseline_requested = pyqtSignal()
