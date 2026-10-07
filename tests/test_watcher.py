@@ -1,7 +1,7 @@
 import pytest
 
 from ctqa_catphan.app_settings import DEFAULT_CASE_FOLDER_REGEX, watcher_case_folder_regex
-from ctqa_catphan.watcher import case_folder_matches, process_import_dir
+from ctqa_catphan.watcher import WatchPathUnavailable, case_folder_matches, process_import_dir, watch
 
 
 def test_case_folder_matches_mmddyyyy_dailyqa():
@@ -102,3 +102,22 @@ def test_process_import_dir_publishes_and_emails(tmp_path, monkeypatch):
     assert dest == cases / "20261006_080000"
     assert machine["NAME"] == "CTSim1"
     assert called["run"] == (str(series), "CTSim1", True)
+
+
+def test_watch_checks_baseline_at_start(tmp_path):
+    watch_dir = tmp_path / "import"
+    watch_dir.mkdir()
+    settings = {
+        "RunMode": "Clinic",
+        "Watcher": {"watch_path": str(watch_dir), "data_root": str(tmp_path / "root")},
+        "MACHINES": [
+            {
+                "NAME": "CTSim1",
+                "machine_dir": str(tmp_path / "machine"),
+                "baseline_dir": str(tmp_path / "missing-baseline"),
+                "cases_dir": str(tmp_path / "cases"),
+            }
+        ],
+    }
+    with pytest.raises(WatchPathUnavailable, match="baseline_dir"):
+        watch(str(watch_dir), data=settings)

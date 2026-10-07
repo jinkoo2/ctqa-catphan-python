@@ -13,7 +13,14 @@ from pathlib import Path
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-from .app_settings import load_settings, machine_by_station, watcher_case_folder_regex, watcher_settings
+from .app_settings import (
+    SettingsPathUnavailable,
+    check_settings_paths,
+    load_settings,
+    machine_by_station,
+    watcher_case_folder_regex,
+    watcher_settings,
+)
 from .dicom_io import (
     case_stamp_from_info,
     dicom_series_to_mha,
@@ -146,6 +153,10 @@ def watch(watch_path: str = "", data: dict | None = None) -> None:
     settings = data if data is not None else load_settings()
     cfg = watcher_settings(settings)
     path = Path(watch_path or cfg.get("watch_path") or "")
+    try:
+        check_settings_paths(settings, watch_path=path, role="watch", require=True, log=logger)
+    except SettingsPathUnavailable as exc:
+        raise WatchPathUnavailable(str(exc)) from exc
     if not path.is_dir():
         raise WatchPathUnavailable(f"watch_path not found: {path}")
     case_regex = watcher_case_folder_regex(settings)
